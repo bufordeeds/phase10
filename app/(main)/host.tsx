@@ -13,16 +13,20 @@ import {
 import { useRouter } from 'expo-router';
 import { useColorScheme } from '@/components/useColorScheme';
 import { useGameStore } from '@/src/stores/gameStore';
+import { useAuthStore } from '@/src/stores/authStore';
 import { supabase } from '@/src/lib/supabase';
 import { PhaseSet, GameSettings } from '@/src/types/database';
 import { getPhaseDescription } from '@/src/utils/phaseValidation';
+import FontAwesome from '@expo/vector-icons/FontAwesome';
 
 export default function HostGameScreen() {
   const router = useRouter();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
 
+  const { profile } = useAuthStore();
   const { createGame, loading, error } = useGameStore();
+  const isGuest = profile?.is_guest ?? false;
 
   const [phaseSets, setPhaseSets] = useState<PhaseSet[]>([]);
   const [loadingPhaseSets, setLoadingPhaseSets] = useState(true);
@@ -98,6 +102,35 @@ export default function HostGameScreen() {
     return (
       <View style={[styles.container, styles.centered, isDark && styles.containerDark]}>
         <ActivityIndicator size="large" />
+      </View>
+    );
+  }
+
+  // Guest restriction
+  if (isGuest) {
+    return (
+      <View style={[styles.container, styles.centered, isDark && styles.containerDark]}>
+        <FontAwesome name="user-circle" size={64} color={isDark ? '#666' : '#ccc'} />
+        <Text style={[styles.guestTitle, isDark && styles.textDark]}>
+          Account Required
+        </Text>
+        <Text style={[styles.guestMessage, isDark && styles.subtitleDark]}>
+          Create an account to host games. Guests can still join games hosted by others.
+        </Text>
+        <Pressable
+          style={styles.createAccountButton}
+          onPress={() => router.push('/(main)/settings')}
+        >
+          <Text style={styles.createAccountButtonText}>Go to Settings</Text>
+        </Pressable>
+        <Pressable
+          style={styles.joinInsteadButton}
+          onPress={() => router.push('/(main)/join')}
+        >
+          <Text style={[styles.joinInsteadText, isDark && styles.subtitleDark]}>
+            Join a game instead
+          </Text>
+        </Pressable>
       </View>
     );
   }
@@ -373,5 +406,39 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 18,
     fontWeight: '600',
+  },
+  // Guest restriction styles
+  guestTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#1a1a1a',
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  guestMessage: {
+    fontSize: 16,
+    color: '#666',
+    textAlign: 'center',
+    paddingHorizontal: 32,
+    marginBottom: 24,
+  },
+  createAccountButton: {
+    backgroundColor: '#007AFF',
+    paddingVertical: 14,
+    paddingHorizontal: 32,
+    borderRadius: 12,
+    marginBottom: 16,
+  },
+  createAccountButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  joinInsteadButton: {
+    padding: 12,
+  },
+  joinInsteadText: {
+    color: '#666',
+    fontSize: 14,
   },
 });
