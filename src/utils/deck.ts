@@ -186,8 +186,8 @@ export function sortCards(cards: Card[]): Card[] {
     if (!a.isSkip && b.isSkip) return -1;
 
     // Sort by color first
-    const colorOrder = { red: 0, blue: 1, green: 2, yellow: 3 };
-    const colorDiff = colorOrder[a.color] - colorOrder[b.color];
+    const colorOrder: Record<string, number> = { red: 0, blue: 1, green: 2, yellow: 3, wild: 4, skip: 5 };
+    const colorDiff = (colorOrder[a.color] || 0) - (colorOrder[b.color] || 0);
     if (colorDiff !== 0) return colorDiff;
 
     // Then by value

@@ -91,17 +91,11 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   signInAsGuest: async () => {
     set({ loading: true });
     try {
-      // Generate a random guest email and password
-      const guestId = Math.random().toString(36).substring(2, 10);
-      const guestEmail = `guest_${guestId}@phase10.local`;
-      const guestPassword = Math.random().toString(36).substring(2, 18);
-
-      const { error } = await supabase.auth.signUp({
-        email: guestEmail,
-        password: guestPassword,
+      // Use Supabase anonymous sign-in
+      const { error } = await supabase.auth.signInAnonymously({
         options: {
           data: {
-            username: `Guest_${guestId.substring(0, 6)}`,
+            username: `Guest_${Math.random().toString(36).substring(2, 8)}`,
             is_guest: true,
           },
         },

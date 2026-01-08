@@ -48,15 +48,15 @@ function RootLayoutNav() {
     if (!initialized) return;
 
     const inAuthGroup = segments[0] === '(auth)';
-    const inMainGroup = segments[0] === '(main)';
+    const inProtectedRoute = segments[0] === '(main)' || segments[0] === 'lobby' || segments[0] === 'game';
 
     if (user && inAuthGroup) {
       // User is signed in but on auth screen, redirect to main
       router.replace('/(main)');
-    } else if (!user && inMainGroup) {
-      // User is not signed in but on main screen, redirect to auth
+    } else if (!user && inProtectedRoute) {
+      // User is not signed in but on protected screen, redirect to auth
       router.replace('/(auth)');
-    } else if (!user && !inAuthGroup) {
+    } else if (!user && !inAuthGroup && segments[0]) {
       // User is not signed in and not on auth screen, redirect to auth
       router.replace('/(auth)');
     }

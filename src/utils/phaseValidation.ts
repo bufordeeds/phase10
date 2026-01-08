@@ -270,6 +270,23 @@ export function getStandardPhases(): PhaseRequirement[][] {
 }
 
 /**
+ * Get human-readable description of a single requirement
+ */
+export function getRequirementDescription(req: PhaseRequirement): string {
+  const typeNames: Record<PhaseRequirementType, string> = {
+    set: 'Set',
+    run: 'Run',
+    color: 'Color',
+  };
+
+  if (req.type === 'color') {
+    return `${req.size} ${typeNames[req.type]}`;
+  }
+
+  return `${typeNames[req.type]} of ${req.size}`;
+}
+
+/**
  * Get human-readable description of a phase requirement
  */
 export function getPhaseDescription(requirements: PhaseRequirement[]): string {

@@ -34,17 +34,32 @@ export default function HostGameScreen() {
   // Load phase sets
   useEffect(() => {
     async function loadPhaseSets() {
-      const { data, error } = await supabase
-        .from('phase_sets')
-        .select('*')
-        .or('is_public.eq.true,creator_id.eq.' + (await supabase.auth.getUser()).data.user?.id);
+      try {
+        const { data: userData } = await supabase.auth.getUser();
+        const userId = userData.user?.id;
 
-      if (!error && data) {
-        const sets = data as unknown as PhaseSet[];
-        setPhaseSets(sets);
-        if (sets.length > 0) {
-          setSelectedPhaseSetId(sets[0].id);
+        // Build query - get public sets and user's own sets
+        let query = supabase.from('phase_sets').select('*');
+
+        if (userId) {
+          query = query.or(`is_public.eq.true,creator_id.eq.${userId}`);
+        } else {
+          query = query.eq('is_public', true);
         }
+
+        const { data, error: queryError } = await query;
+
+        if (queryError) {
+          console.error('Error loading phase sets:', queryError);
+        } else if (data) {
+          const sets = data as unknown as PhaseSet[];
+          setPhaseSets(sets);
+          if (sets.length > 0) {
+            setSelectedPhaseSetId(sets[0].id);
+          }
+        }
+      } catch (err) {
+        console.error('Error in loadPhaseSets:', err);
       }
       setLoadingPhaseSets(false);
     }
