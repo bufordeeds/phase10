@@ -86,8 +86,15 @@ export default function GameLobbyScreen() {
 
   const handleStartGame = async () => {
     const success = await startGame();
-    if (!success && error) {
-      Alert.alert('Error', error);
+    if (success) {
+      // Navigate directly to game instead of waiting for realtime update
+      router.replace(`/game/${gameId}`);
+    } else {
+      // Get fresh error from store since the destructured value might be stale
+      const currentError = useGameStore.getState().error;
+      if (currentError) {
+        Alert.alert('Error', currentError);
+      }
     }
   };
 
