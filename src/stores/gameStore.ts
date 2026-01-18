@@ -223,31 +223,30 @@ export const useGameStore = create<GameStore>((set, get) => ({
       // Set up the deck and deal cards
       const { hands, drawPile, discardPile } = setupGame(players.length);
 
-      // Update each player's hand
-      const sortedPlayers = [...players].sort((a, b) => a.seat_index - b.seat_index);
-      for (let i = 0; i < sortedPlayers.length; i++) {
-        await supabase
-          .from('game_players')
-          .update({ hand: hands[i] } as never)
-          .eq('id', sortedPlayers[i].id);
-      }
+      console.log('Starting game with:', {
+        gameId: game.id,
+        playerCount: players.length,
+        handsCount: hands.length,
+        drawPileCount: drawPile.length,
+        discardPileCount: discardPile.length,
+      });
 
-      // Update game state
-      const { error } = await supabase
-        .from('games')
-        .update({
-          status: 'playing',
-          draw_pile: drawPile,
-          discard_pile: discardPile,
-          current_player_index: 0,
-          turn_phase: 'draw',
-        } as never)
-        .eq('id', game.id);
+      // Use the secure database function to start the game
+      // This handles dealing cards and updating game state atomically
+      const { data, error } = await supabase.rpc('start_game', {
+        p_game_id: game.id,
+        p_hands: hands,
+        p_draw_pile: drawPile,
+        p_discard_pile: discardPile,
+      });
+
+      console.log('start_game RPC result:', { data, error });
 
       if (error) throw error;
 
       return true;
     } catch (err) {
+      console.error('startGame error:', err);
       set({ error: (err as Error).message });
       return false;
     } finally {
@@ -267,6 +266,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
         .select('*')
         .eq('id', gameId)
         .single();
+
+      console.log('loadGame result:', {
+        gameData,
+        drawPileLength: gameData?.draw_pile?.length,
+        discardPileLength: gameData?.discard_pile?.length,
+        error: gameError,
+      });
 
       if (gameError || !gameData) throw new Error('Game not found');
 

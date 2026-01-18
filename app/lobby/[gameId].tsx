@@ -81,6 +81,32 @@ export default function GameLobbyScreen() {
     }
   }, [game?.status]);
 
+  // Poll for game status changes as fallback (in case realtime doesn't fire)
+  useEffect(() => {
+    if (!gameId || game?.status === 'playing') return;
+
+    const pollInterval = setInterval(async () => {
+      const { data, error } = await supabase
+        .from('games')
+        .select('status')
+        .eq('id', gameId)
+        .single();
+
+      if (error || !data) {
+        // Game was deleted (host left) - go back to main menu
+        Alert.alert('Game Ended', 'The host has left the lobby.');
+        router.replace('/(main)');
+        return;
+      }
+
+      if (data.status === 'playing') {
+        router.replace(`/game/${gameId}`);
+      }
+    }, 2000); // Poll every 2 seconds
+
+    return () => clearInterval(pollInterval);
+  }, [gameId, game?.status]);
+
   const isHost = game?.host_id === user?.id;
   const canStart = isHost && players.length >= 2;
 

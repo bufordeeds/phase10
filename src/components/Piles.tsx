@@ -106,7 +106,7 @@ export function GamePiles({
   onDrawFromDiscard,
 }: GamePilesProps) {
   const topDiscard = discardPile.length > 0 ? discardPile[discardPile.length - 1] : null;
-  const canDrawFromDiscard = isDrawPhase && topDiscard && topDiscard.color !== 'skip';
+  const canDrawFromDiscard = isDrawPhase && topDiscard && !topDiscard.isSkip;
 
   return (
     <View style={styles.gamePiles}>

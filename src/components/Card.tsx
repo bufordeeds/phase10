@@ -20,9 +20,9 @@ const CARD_COLORS: Record<string, string> = {
 };
 
 export default function Card({ card, selected, disabled, size = 'medium', onPress }: CardProps) {
-  const cardColor = CARD_COLORS[card.color] || '#666';
-  const isWild = card.color === 'wild';
-  const isSkip = card.color === 'skip';
+  const isWild = card.isWild;
+  const isSkip = card.isSkip;
+  const cardColor = isWild ? CARD_COLORS.wild : isSkip ? CARD_COLORS.skip : CARD_COLORS[card.color] || '#666';
 
   const dimensions = {
     small: { width: 45, height: 65, fontSize: 16, labelSize: 8 },

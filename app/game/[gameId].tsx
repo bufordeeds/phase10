@@ -9,6 +9,7 @@ import {
   Alert,
   Modal,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useColorScheme } from '@/components/useColorScheme';
 import { useGameStore } from '@/src/stores/gameStore';
@@ -61,6 +62,7 @@ export default function GameScreen() {
   const [showHitModal, setShowHitModal] = useState(false);
   const [hitTargetPlayer, setHitTargetPlayer] = useState<string | null>(null);
   const [hitTargetGroup, setHitTargetGroup] = useState<number | null>(null);
+  const [showMenu, setShowMenu] = useState(false);
 
   // Load game on mount
   useEffect(() => {
@@ -157,6 +159,25 @@ export default function GameScreen() {
     }
   };
 
+  // Handle quit game
+  const handleQuitGame = () => {
+    Alert.alert(
+      'Quit Game',
+      'Are you sure you want to leave this game? You won\'t be able to rejoin.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Quit',
+          style: 'destructive',
+          onPress: () => {
+            useGameStore.getState().reset();
+            router.replace('/(main)');
+          },
+        },
+      ]
+    );
+  };
+
   // Handle draw from deck
   const handleDrawFromDeck = async () => {
     if (!isMyTurn || game?.turn_phase !== 'draw') return;
@@ -172,7 +193,7 @@ export default function GameScreen() {
     if (!isMyTurn || game?.turn_phase !== 'draw') return;
 
     const topDiscard = game.discard_pile[game.discard_pile.length - 1];
-    if (topDiscard?.color === 'skip') {
+    if (topDiscard?.isSkip) {
       Alert.alert('Error', 'Cannot draw a Skip card');
       return;
     }
@@ -288,7 +309,31 @@ export default function GameScreen() {
   }
 
   return (
-    <View style={[styles.container, isDark && styles.containerDark]}>
+    <SafeAreaView style={[styles.container, isDark && styles.containerDark]} edges={['top']}>
+      {/* Header with menu button */}
+      <View style={[styles.header, isDark && styles.headerDark]}>
+        <Text style={[styles.headerTitle, isDark && styles.textDark]}>Phase 10</Text>
+        <Pressable style={styles.menuButton} onPress={() => setShowMenu(true)}>
+          <FontAwesome name="bars" size={20} color={isDark ? '#fff' : '#333'} />
+        </Pressable>
+      </View>
+
+      {/* Menu Modal */}
+      <Modal visible={showMenu} transparent animationType="fade">
+        <Pressable style={styles.menuOverlay} onPress={() => setShowMenu(false)}>
+          <View style={[styles.menuContainer, isDark && styles.menuContainerDark]}>
+            <Pressable style={styles.menuItem} onPress={() => { setShowMenu(false); handleQuitGame(); }}>
+              <FontAwesome name="sign-out" size={18} color="#FF3B30" />
+              <Text style={styles.menuItemTextDanger}>Quit Game</Text>
+            </Pressable>
+            <Pressable style={styles.menuItem} onPress={() => setShowMenu(false)}>
+              <FontAwesome name="times" size={18} color={isDark ? '#999' : '#666'} />
+              <Text style={[styles.menuItemText, isDark && styles.textDark]}>Cancel</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
+
       {/* Top bar - Players and scores */}
       <ScrollView
         horizontal
@@ -479,7 +524,7 @@ export default function GameScreen() {
           <FontAwesome name="times" size={16} color="#fff" />
         </Pressable>
       )}
-    </View>
+    </SafeAreaView>
   );
 }
 
@@ -490,6 +535,67 @@ const styles = StyleSheet.create({
   },
   containerDark: {
     backgroundColor: '#0a0a0a',
+  },
+  // Header styles
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#ddd',
+    backgroundColor: '#fff',
+  },
+  headerDark: {
+    backgroundColor: '#1a1a1a',
+    borderBottomColor: '#333',
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#333',
+  },
+  menuButton: {
+    padding: 8,
+  },
+  // Menu styles
+  menuOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-start',
+    alignItems: 'flex-end',
+    paddingTop: 60,
+    paddingRight: 16,
+  },
+  menuContainer: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 8,
+    minWidth: 160,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  menuContainerDark: {
+    backgroundColor: '#2a2a2a',
+  },
+  menuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    gap: 12,
+  },
+  menuItemText: {
+    fontSize: 16,
+    color: '#333',
+  },
+  menuItemTextDanger: {
+    fontSize: 16,
+    color: '#FF3B30',
+    fontWeight: '500',
   },
   centered: {
     justifyContent: 'center',
