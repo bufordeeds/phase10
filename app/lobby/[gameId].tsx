@@ -99,16 +99,25 @@ export default function GameLobbyScreen() {
   };
 
   const handleLeaveGame = async () => {
+    const message = isHost
+      ? 'Leaving will delete this lobby for everyone. Are you sure?'
+      : 'Are you sure you want to leave this lobby?';
+
     Alert.alert(
       'Leave Game',
-      'Are you sure you want to leave this lobby?',
+      message,
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Leave',
           style: 'destructive',
           onPress: async () => {
-            await leaveGame();
+            if (isHost && game) {
+              // Host leaving deletes the entire game
+              await supabase.rpc('delete_my_lobby', { game_id: game.id });
+            } else {
+              await leaveGame();
+            }
             router.replace('/(main)');
           },
         },

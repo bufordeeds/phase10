@@ -30,8 +30,19 @@ export default function LobbiesScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  const cleanupStaleLobbies = useCallback(async () => {
+    try {
+      await supabase.rpc('cleanup_stale_lobbies');
+    } catch (err) {
+      console.error('Cleanup error:', err);
+    }
+  }, []);
+
   const loadLobbies = useCallback(async () => {
     try {
+      // Clean up stale lobbies first
+      await cleanupStaleLobbies();
+
       // Get public lobby games
       const { data: gamesData, error: gamesError } = await supabase
         .from('games')
