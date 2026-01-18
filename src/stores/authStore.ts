@@ -13,13 +13,13 @@ interface AuthState {
 
 interface AuthActions {
   initialize: () => Promise<void>;
-  signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
-  signUp: (email: string, password: string, username: string) => Promise<{ error: Error | null }>;
+  signIn: (username: string, password: string) => Promise<{ error: Error | null }>;
+  signUp: (username: string, password: string) => Promise<{ error: Error | null }>;
   signInAsGuest: () => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
   fetchProfile: () => Promise<void>;
   updateProfile: (updates: Partial<Profile>) => Promise<{ error: Error | null }>;
-  convertGuestToAccount: (email: string, password: string, username: string) => Promise<{ error: Error | null }>;
+  convertGuestToAccount: (username: string, password: string) => Promise<{ error: Error | null }>;
 }
 
 type AuthStore = AuthState & AuthActions;
@@ -56,22 +56,33 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     }
   },
 
-  signIn: async (email: string, password: string) => {
+  signIn: async (username: string, password: string) => {
     set({ loading: true });
     try {
+      // Generate email from username for Supabase auth
+      const email = `${username.toLowerCase()}@phase10.local`;
       const { error } = await supabase.auth.signInWithPassword({
         email,
         password,
       });
-      return { error: error ? new Error(error.message) : null };
+      if (error) {
+        // Make error message user-friendly
+        if (error.message.includes('Invalid login credentials')) {
+          return { error: new Error('Invalid username or password') };
+        }
+        return { error: new Error(error.message) };
+      }
+      return { error: null };
     } finally {
       set({ loading: false });
     }
   },
 
-  signUp: async (email: string, password: string, username: string) => {
+  signUp: async (username: string, password: string) => {
     set({ loading: true });
     try {
+      // Generate email from username for Supabase auth
+      const email = `${username.toLowerCase()}@phase10.local`;
       const { error } = await supabase.auth.signUp({
         email,
         password,
@@ -82,7 +93,14 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
           },
         },
       });
-      return { error: error ? new Error(error.message) : null };
+      if (error) {
+        // Make error message user-friendly
+        if (error.message.includes('already registered')) {
+          return { error: new Error('Username already taken') };
+        }
+        return { error: new Error(error.message) };
+      }
+      return { error: null };
     } finally {
       set({ loading: false });
     }
@@ -151,7 +169,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     }
   },
 
-  convertGuestToAccount: async (email: string, password: string, username: string) => {
+  convertGuestToAccount: async (username: string, password: string) => {
     const { user, profile } = get();
     if (!user || !profile?.is_guest) {
       return { error: new Error('Not a guest account') };
@@ -159,6 +177,9 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
 
     set({ loading: true });
     try {
+      // Generate email from username for Supabase auth
+      const email = `${username.toLowerCase()}@phase10.local`;
+
       // Update email and password
       const { error: updateError } = await supabase.auth.updateUser({
         email,
@@ -166,6 +187,9 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       });
 
       if (updateError) {
+        if (updateError.message.includes('already registered')) {
+          return { error: new Error('Username already taken') };
+        }
         return { error: new Error(updateError.message) };
       }
 

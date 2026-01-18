@@ -14,7 +14,7 @@ import { useAuth } from '@/src/hooks/useAuth';
 import { useColorScheme } from '@/components/useColorScheme';
 
 export default function SignInScreen() {
-  const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const { signIn, loading } = useAuth();
   const router = useRouter();
@@ -22,12 +22,12 @@ export default function SignInScreen() {
   const isDark = colorScheme === 'dark';
 
   const handleSignIn = async () => {
-    if (!email || !password) {
+    if (!username || !password) {
       Alert.alert('Error', 'Please fill in all fields');
       return;
     }
 
-    const { error } = await signIn(email, password);
+    const { error } = await signIn(username, password);
     if (error) {
       Alert.alert('Sign In Failed', error.message);
     }
@@ -47,13 +47,12 @@ export default function SignInScreen() {
         <View style={styles.form}>
           <TextInput
             style={[styles.input, isDark && styles.inputDark]}
-            placeholder="Email"
+            placeholder="Username"
             placeholderTextColor={isDark ? '#666' : '#999'}
-            value={email}
-            onChangeText={setEmail}
+            value={username}
+            onChangeText={setUsername}
             autoCapitalize="none"
-            keyboardType="email-address"
-            autoComplete="email"
+            autoCorrect={false}
           />
 
           <TextInput

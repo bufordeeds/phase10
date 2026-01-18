@@ -14,16 +14,16 @@ import { useAuth } from '@/src/hooks/useAuth';
 import { useColorScheme } from '@/components/useColorScheme';
 
 export default function SignUpScreen() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
   const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const { signUp, loading } = useAuth();
   const router = useRouter();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
 
   const handleSignUp = async () => {
-    if (!email || !password || !username) {
+    if (!username || !password || !confirmPassword) {
       Alert.alert('Error', 'Please fill in all fields');
       return;
     }
@@ -33,12 +33,22 @@ export default function SignUpScreen() {
       return;
     }
 
+    if (!/^[a-zA-Z0-9_]+$/.test(username)) {
+      Alert.alert('Error', 'Username can only contain letters, numbers, and underscores');
+      return;
+    }
+
     if (password.length < 6) {
       Alert.alert('Error', 'Password must be at least 6 characters');
       return;
     }
 
-    const { error } = await signUp(email, password, username);
+    if (password !== confirmPassword) {
+      Alert.alert('Error', 'Passwords do not match');
+      return;
+    }
+
+    const { error } = await signUp(username, password);
     if (error) {
       Alert.alert('Sign Up Failed', error.message);
     }
@@ -63,18 +73,7 @@ export default function SignUpScreen() {
             value={username}
             onChangeText={setUsername}
             autoCapitalize="none"
-            autoComplete="username"
-          />
-
-          <TextInput
-            style={[styles.input, isDark && styles.inputDark]}
-            placeholder="Email"
-            placeholderTextColor={isDark ? '#666' : '#999'}
-            value={email}
-            onChangeText={setEmail}
-            autoCapitalize="none"
-            keyboardType="email-address"
-            autoComplete="email"
+            autoCorrect={false}
           />
 
           <TextInput
@@ -83,6 +82,16 @@ export default function SignUpScreen() {
             placeholderTextColor={isDark ? '#666' : '#999'}
             value={password}
             onChangeText={setPassword}
+            secureTextEntry
+            autoComplete="password-new"
+          />
+
+          <TextInput
+            style={[styles.input, isDark && styles.inputDark]}
+            placeholder="Confirm Password"
+            placeholderTextColor={isDark ? '#666' : '#999'}
+            value={confirmPassword}
+            onChangeText={setConfirmPassword}
             secureTextEntry
             autoComplete="password-new"
           />

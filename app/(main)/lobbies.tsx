@@ -7,9 +7,11 @@ import {
   FlatList,
   RefreshControl,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useColorScheme } from '@/components/useColorScheme';
+import { useGameStore } from '@/src/stores/gameStore';
 import { supabase } from '@/src/lib/supabase';
 import { Game, GameSettings, Profile } from '@/src/types/database';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
@@ -100,8 +102,20 @@ export default function LobbiesScreen() {
     loadLobbies();
   }, [loadLobbies]);
 
-  const handleJoinLobby = (gameId: string) => {
-    router.push(`/lobby/${gameId}`);
+  const { joinGame } = useGameStore();
+  const [joiningGameId, setJoiningGameId] = useState<string | null>(null);
+
+  const handleJoinLobby = async (game: LobbyGame) => {
+    setJoiningGameId(game.id);
+    const success = await joinGame(game.code);
+    setJoiningGameId(null);
+
+    if (success) {
+      router.push(`/lobby/${game.id}`);
+    } else {
+      const { error } = useGameStore.getState();
+      Alert.alert('Error', error || 'Failed to join game');
+    }
   };
 
   const renderLobbyItem = ({ item }: { item: LobbyGame }) => {
@@ -112,8 +126,8 @@ export default function LobbiesScreen() {
     return (
       <Pressable
         style={[styles.lobbyCard, isDark && styles.lobbyCardDark, isFull && styles.lobbyCardFull]}
-        onPress={() => !isFull && handleJoinLobby(item.id)}
-        disabled={isFull}
+        onPress={() => !isFull && handleJoinLobby(item)}
+        disabled={isFull || joiningGameId === item.id}
       >
         <View style={styles.lobbyHeader}>
           <Text style={[styles.hostName, isDark && styles.textDark]}>
@@ -135,6 +149,8 @@ export default function LobbiesScreen() {
 
         {isFull ? (
           <Text style={styles.fullLabel}>Full</Text>
+        ) : joiningGameId === item.id ? (
+          <Text style={styles.joiningLabel}>Joining...</Text>
         ) : (
           <Text style={styles.joinLabel}>Tap to join</Text>
         )}
@@ -275,6 +291,11 @@ const styles = StyleSheet.create({
   fullLabel: {
     fontSize: 14,
     color: '#FF3B30',
+    fontWeight: '500',
+  },
+  joiningLabel: {
+    fontSize: 14,
+    color: '#999',
     fontWeight: '500',
   },
   emptyContainer: {

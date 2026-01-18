@@ -19,8 +19,9 @@ export default function SettingsScreen() {
   const isDark = colorScheme === 'dark';
 
   const [username, setUsername] = useState(profile?.username || '');
-  const [email, setEmail] = useState('');
+  const [newUsername, setNewUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [showConvert, setShowConvert] = useState(false);
 
   const handleUpdateUsername = async () => {
@@ -35,17 +36,40 @@ export default function SettingsScreen() {
   };
 
   const handleConvertAccount = async () => {
-    if (!email || !password || !username) {
+    if (!newUsername || !password || !confirmPassword) {
       Alert.alert('Error', 'Please fill in all fields');
       return;
     }
 
-    const { error } = await convertGuestToAccount(email, password, username);
+    if (newUsername.length < 3) {
+      Alert.alert('Error', 'Username must be at least 3 characters');
+      return;
+    }
+
+    if (!/^[a-zA-Z0-9_]+$/.test(newUsername)) {
+      Alert.alert('Error', 'Username can only contain letters, numbers, and underscores');
+      return;
+    }
+
+    if (password.length < 6) {
+      Alert.alert('Error', 'Password must be at least 6 characters');
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      Alert.alert('Error', 'Passwords do not match');
+      return;
+    }
+
+    const { error } = await convertGuestToAccount(newUsername, password);
     if (error) {
       Alert.alert('Error', error.message);
     } else {
-      Alert.alert('Success', 'Account created! You can now sign in with your email.');
+      Alert.alert('Success', 'Account created! You can now sign in with your username.');
       setShowConvert(false);
+      setNewUsername('');
+      setPassword('');
+      setConfirmPassword('');
     }
   };
 
@@ -114,18 +138,26 @@ export default function SettingsScreen() {
                 <View style={styles.convertForm}>
                   <TextInput
                     style={[styles.input, isDark && styles.inputDark]}
-                    value={email}
-                    onChangeText={setEmail}
-                    placeholder="Email"
+                    value={newUsername}
+                    onChangeText={setNewUsername}
+                    placeholder="Username"
                     placeholderTextColor={isDark ? '#666' : '#999'}
                     autoCapitalize="none"
-                    keyboardType="email-address"
+                    autoCorrect={false}
                   />
                   <TextInput
                     style={[styles.input, isDark && styles.inputDark]}
                     value={password}
                     onChangeText={setPassword}
                     placeholder="Password"
+                    placeholderTextColor={isDark ? '#666' : '#999'}
+                    secureTextEntry
+                  />
+                  <TextInput
+                    style={[styles.input, isDark && styles.inputDark]}
+                    value={confirmPassword}
+                    onChangeText={setConfirmPassword}
+                    placeholder="Confirm Password"
                     placeholderTextColor={isDark ? '#666' : '#999'}
                     secureTextEntry
                   />
