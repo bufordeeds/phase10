@@ -1,9 +1,19 @@
 import { create } from 'zustand';
 import { supabase } from '../lib/supabase';
 import { Game, GamePlayer, Card, PhaseSet, GameSettings } from '../types/database';
-import { setupGame, shuffle, calculateHandScore, removeCardById } from '../utils/deck';
+import { setupGame, shuffle, calculateHandScore, removeCardById, getCardDisplayName } from '../utils/deck';
 import { validatePhase, canHitOnGroup, determineGroupType } from '../utils/phaseValidation';
 import { RealtimeChannel } from '@supabase/supabase-js';
+
+// Action log entry for in-game history
+export interface ActionLogEntry {
+  id: string;
+  timestamp: Date;
+  playerId: string;
+  playerName: string;
+  action: 'draw' | 'discard' | 'lay_down' | 'hit' | 'skip' | 'round_end' | 'game_start';
+  details: string;
+}
 
 interface GameState {
   // Current game data
@@ -16,6 +26,7 @@ interface GameState {
   selectedCards: string[]; // Card IDs selected for phase lay down
   loading: boolean;
   error: string | null;
+  actionLog: ActionLogEntry[]; // In-game action history
 
   // Realtime channel
   channel: RealtimeChannel | null;
@@ -44,6 +55,9 @@ interface GameActions {
   deselectCard: (cardId: string) => void;
   clearSelection: () => void;
 
+  // Action log
+  addLogEntry: (action: ActionLogEntry['action'], details: string, playerName?: string) => void;
+
   // Utility
   setError: (error: string | null) => void;
   reset: () => void;
@@ -61,6 +75,19 @@ function generateGameCode(): string {
   return code;
 }
 
+// Deduplicate cards by ID
+function deduplicateCards(cards: Card[]): Card[] {
+  const seen = new Set<string>();
+  return cards.filter(card => {
+    if (seen.has(card.id)) {
+      console.warn('[STORE] Duplicate card filtered:', card.id);
+      return false;
+    }
+    seen.add(card.id);
+    return true;
+  });
+}
+
 export const useGameStore = create<GameStore>((set, get) => ({
   game: null,
   players: [],
@@ -69,6 +96,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   selectedCards: [],
   loading: false,
   error: null,
+  actionLog: [],
   channel: null,
 
   createGame: async (phaseSetId: string, settings: GameSettings, password?: string) => {
@@ -244,6 +272,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
       if (error) throw error;
 
+      // Log game start
+      get().addLogEntry('game_start', 'Game started! Good luck!', 'System');
+
       return true;
     } catch (err) {
       console.error('startGame error:', err);
@@ -319,17 +350,35 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   subscribeToGame: (gameId: string) => {
-    const { channel: existingChannel } = get();
-    if (existingChannel) {
-      existingChannel.unsubscribe();
+    const { channel: existingChannel, game: existingGame } = get();
+
+    // Don't create duplicate subscriptions for the same game
+    if (existingChannel && existingGame?.id === gameId) {
+      console.log('[REALTIME] Already subscribed to this game, skipping');
+      return;
     }
 
+    if (existingChannel) {
+      console.log('[REALTIME] Unsubscribing from existing channel');
+      supabase.removeChannel(existingChannel);
+    }
+
+    // Use a unique channel name to prevent conflicts
+    const channelName = `game:${gameId}:${Date.now()}`;
+    console.log('[REALTIME] Creating new subscription:', channelName);
+
     const channel = supabase
-      .channel(`game:${gameId}`)
+      .channel(channelName)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'games', filter: `id=eq.${gameId}` },
         (payload) => {
+          console.log('[REALTIME] Game update received:', {
+            eventType: payload.eventType,
+            turnPhase: (payload.new as Game)?.turn_phase,
+            currentPlayerIndex: (payload.new as Game)?.current_player_index,
+            discardPileLength: (payload.new as Game)?.discard_pile?.length,
+          });
           if (payload.eventType === 'UPDATE') {
             set({ game: payload.new as Game });
           }
@@ -338,26 +387,123 @@ export const useGameStore = create<GameStore>((set, get) => ({
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'game_players', filter: `game_id=eq.${gameId}` },
-        async () => {
-          // Reload players on any change
-          const { data: playersData } = await supabase
-            .from('game_players')
-            .select('*')
-            .eq('game_id', gameId)
-            .order('seat_index');
+        (payload) => {
+          const { currentPlayer: localCurrentPlayer } = get();
+          const updatedPlayer = payload.new as GamePlayer;
 
-          const players = (playersData || []) as unknown as GamePlayer[];
+          // Use the stored currentPlayer to determine if this is our own update
+          // This avoids async issues with getUser()
+          const isOwnUpdate = updatedPlayer?.user_id === localCurrentPlayer?.user_id;
 
-          const { data: { user } } = await supabase.auth.getUser();
-          const currentPlayer = players.find(p => p.user_id === user?.id) || null;
-
-          set({
-            players,
-            currentPlayer,
+          console.log('[REALTIME] Player update received:', {
+            eventType: payload.eventType,
+            updatedPlayerId: updatedPlayer?.user_id,
+            localCurrentPlayerId: localCurrentPlayer?.user_id,
+            isOwnUpdate,
+            handLength: updatedPlayer?.hand?.length,
           });
+
+          // Apply the realtime payload directly (server is source of truth)
+          if (isOwnUpdate) {
+            // This is our own player update - use the payload directly
+            const deduplicatedHand = deduplicateCards(updatedPlayer.hand || []);
+            const updatedCurrentPlayer = {
+              ...updatedPlayer,
+              hand: deduplicatedHand,
+            };
+
+            console.log('[REALTIME] Own player update applied, hand length:', deduplicatedHand.length);
+
+            // Update our player in the players array
+            const { players: currentPlayers } = get();
+            const updatedPlayers = currentPlayers.map(p =>
+              p.user_id === localCurrentPlayer?.user_id ? updatedCurrentPlayer : p
+            );
+
+            set({
+              players: updatedPlayers as GamePlayer[],
+              currentPlayer: updatedCurrentPlayer as GamePlayer,
+            });
+          } else {
+            // Another player's update - handle INSERT vs UPDATE
+            const { players: currentPlayers, currentPlayer, game } = get();
+
+            // Workaround: Refetch game state when another player makes changes
+            // This compensates for game realtime updates not always coming through
+            if (payload.eventType === 'UPDATE' && game) {
+              supabase
+                .from('games')
+                .select('*')
+                .eq('id', game.id)
+                .single()
+                .then(({ data }) => {
+                  if (data) {
+                    console.log('[REALTIME] Refetched game state after other player update:', {
+                      turnPhase: (data as Game).turn_phase,
+                      currentPlayerIndex: (data as Game).current_player_index,
+                      discardPileLength: (data as Game).discard_pile?.length,
+                    });
+                    set({ game: data as Game });
+                  }
+                });
+            }
+
+            if (payload.eventType === 'INSERT') {
+              // New player joined - add them to the array
+              console.log('[REALTIME] New player joined, adding to players array');
+              const playerExists = currentPlayers.some(p => p.id === updatedPlayer.id);
+              if (!playerExists && updatedPlayer.id) {
+                // Ensure the new player has required fields
+                const newPlayer: GamePlayer = {
+                  ...updatedPlayer,
+                  hand: updatedPlayer.hand || [],
+                  laid_down_cards: updatedPlayer.laid_down_cards || [],
+                  hits: updatedPlayer.hits || [],
+                };
+                const newPlayers = [...currentPlayers, newPlayer].sort(
+                  (a, b) => a.seat_index - b.seat_index
+                );
+                set({
+                  players: newPlayers,
+                  currentPlayer,
+                });
+              }
+            } else if (payload.eventType === 'UPDATE') {
+              // Existing player updated - merge with existing data to preserve fields
+              console.log('[REALTIME] Other player update, updating in players array');
+              const updatedPlayers = currentPlayers.map(p => {
+                if (p.id === updatedPlayer.id) {
+                  // Merge the update with existing player data
+                  return {
+                    ...p,
+                    ...updatedPlayer,
+                    // Ensure arrays are never undefined
+                    hand: updatedPlayer.hand ?? p.hand ?? [],
+                    laid_down_cards: updatedPlayer.laid_down_cards ?? p.laid_down_cards ?? [],
+                    hits: updatedPlayer.hits ?? p.hits ?? [],
+                  };
+                }
+                return p;
+              });
+              set({
+                players: updatedPlayers,
+                currentPlayer,
+              });
+            } else if (payload.eventType === 'DELETE') {
+              // Player left
+              console.log('[REALTIME] Player left, removing from players array');
+              const filteredPlayers = currentPlayers.filter(p => p.id !== (payload.old as GamePlayer)?.id);
+              set({
+                players: filteredPlayers,
+                currentPlayer,
+              });
+            }
+          }
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log('[REALTIME] Subscription status:', status);
+      });
 
     set({ channel });
   },
@@ -365,30 +511,48 @@ export const useGameStore = create<GameStore>((set, get) => ({
   unsubscribeFromGame: () => {
     const { channel } = get();
     if (channel) {
-      channel.unsubscribe();
+      console.log('[REALTIME] Unsubscribing from game channel');
+      supabase.removeChannel(channel);
       set({ channel: null });
     }
   },
 
   drawCard: async (pile: 'draw' | 'discard') => {
-    const { game, currentPlayer, players } = get();
-    if (!game || !currentPlayer) return false;
+    const { game, currentPlayer, players, loading } = get();
+
+    console.log('[DRAW] Starting draw from:', pile);
+
+    if (loading) {
+      console.log('[DRAW] Error: Action already in progress');
+      return false;
+    }
+
+    if (!game || !currentPlayer) {
+      console.log('[DRAW] Error: No game or currentPlayer');
+      return false;
+    }
 
     // Validate it's this player's turn
     const sortedPlayers = [...players].sort((a, b) => a.seat_index - b.seat_index);
     const currentTurnPlayer = sortedPlayers[game.current_player_index];
+
     if (currentTurnPlayer?.user_id !== currentPlayer.user_id) {
+      console.log('[DRAW] Error: Not your turn');
       set({ error: 'Not your turn' });
       return false;
     }
 
     if (game.turn_phase !== 'draw') {
+      console.log('[DRAW] Error: Already drew this turn');
       set({ error: 'Already drew this turn' });
       return false;
     }
 
+    // Set loading to disable UI while we update
     set({ loading: true, error: null });
+
     try {
+      // Calculate new state
       let card: Card;
       let newDrawPile = [...game.draw_pile];
       let newDiscardPile = [...game.discard_pile];
@@ -411,11 +575,15 @@ export const useGameStore = create<GameStore>((set, get) => ({
         card = newDiscardPile.pop()!;
       }
 
-      // Update hand
       const newHand = [...currentPlayer.hand, card];
 
-      // Update game state
-      await supabase
+      console.log('[DRAW] Updating database...', {
+        cardId: card.id,
+        newHandLength: newHand.length,
+      });
+
+      // Update game state in database
+      const { error: gameError } = await supabase
         .from('games')
         .update({
           draw_pile: newDrawPile,
@@ -425,14 +593,61 @@ export const useGameStore = create<GameStore>((set, get) => ({
         } as never)
         .eq('id', game.id);
 
-      // Update player hand
-      await supabase
+      if (gameError) {
+        console.log('[DRAW] Error updating game:', gameError);
+        throw gameError;
+      }
+
+      // Immediately apply game update locally (don't wait for realtime)
+      const updatedGame: Game = {
+        ...game,
+        draw_pile: newDrawPile,
+        discard_pile: newDiscardPile,
+        turn_phase: 'play',
+        last_activity_at: new Date().toISOString(),
+      };
+      console.log('[DRAW] Applying game update locally:', {
+        turnPhase: updatedGame.turn_phase,
+        drawPileLength: updatedGame.draw_pile?.length,
+      });
+      set({ game: updatedGame });
+
+      // Update player hand in database
+      const { error: playerError } = await supabase
         .from('game_players')
         .update({ hand: newHand } as never)
         .eq('id', currentPlayer.id);
 
+      if (playerError) {
+        console.log('[DRAW] Error updating player:', playerError);
+        throw playerError;
+      }
+
+      // Immediately apply player update locally
+      const deduplicatedHand = deduplicateCards(newHand);
+      const updatedCurrentPlayer: GamePlayer = {
+        ...currentPlayer,
+        hand: deduplicatedHand,
+      };
+      const { players: currentPlayers } = get();
+      const updatedPlayers = currentPlayers.map(p =>
+        p.id === currentPlayer.id ? updatedCurrentPlayer : p
+      );
+      set({
+        players: updatedPlayers,
+        currentPlayer: updatedCurrentPlayer,
+      });
+      console.log('[DRAW] Applied player update locally, hand length:', deduplicatedHand.length);
+
+      console.log('[DRAW] Database updated and local state applied');
+
+      // Log the action
+      const cardName = getCardDisplayName(card);
+      get().addLogEntry('draw', `Drew ${cardName} from ${pile} pile`, 'You');
+
       return true;
     } catch (err) {
+      console.log('[DRAW] Error:', err);
       set({ error: (err as Error).message });
       return false;
     } finally {
@@ -441,8 +656,19 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   layDownPhase: async (cardGroups: Card[][]) => {
-    const { game, currentPlayer, phaseSet, players } = get();
-    if (!game || !currentPlayer || !phaseSet) return false;
+    const { game, currentPlayer, phaseSet, players, loading } = get();
+
+    console.log('[LAY_DOWN] Starting lay down phase');
+
+    if (loading) {
+      console.log('[LAY_DOWN] Error: Action already in progress');
+      return false;
+    }
+
+    if (!game || !currentPlayer || !phaseSet) {
+      console.log('[LAY_DOWN] Error: No game, currentPlayer, or phaseSet');
+      return false;
+    }
 
     // Validate it's this player's turn and correct phase
     const sortedPlayers = [...players].sort((a, b) => a.seat_index - b.seat_index);
@@ -479,7 +705,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       return false;
     }
 
-    set({ loading: true, error: null });
+    set({ loading: true, error: null, selectedCards: [] });
     try {
       // Remove laid down cards from hand
       let newHand = [...currentPlayer.hand];
@@ -488,8 +714,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
         newHand = remaining;
       }
 
-      // Update player state
-      await supabase
+      console.log('[LAY_DOWN] Updating database...', {
+        newHandLength: newHand.length,
+        cardGroupsCount: cardGroups.length,
+        totalCardsLaidDown: allCards.length,
+      });
+
+      // Update player state in database
+      const { error: playerError } = await supabase
         .from('game_players')
         .update({
           hand: newHand,
@@ -498,7 +730,33 @@ export const useGameStore = create<GameStore>((set, get) => ({
         } as never)
         .eq('id', currentPlayer.id);
 
-      get().clearSelection();
+      if (playerError) {
+        console.log('[LAY_DOWN] Error updating player:', playerError);
+        throw playerError;
+      }
+
+      // Immediately apply player update locally
+      const updatedCurrentPlayer: GamePlayer = {
+        ...currentPlayer,
+        hand: newHand,
+        has_laid_down: true,
+        laid_down_cards: cardGroups,
+      };
+      const { players: currentPlayers } = get();
+      const updatedPlayers = currentPlayers.map(p =>
+        p.id === currentPlayer.id ? updatedCurrentPlayer : p
+      );
+      set({
+        players: updatedPlayers,
+        currentPlayer: updatedCurrentPlayer,
+      });
+      console.log('[LAY_DOWN] Applied player update locally');
+
+      console.log('[LAY_DOWN] Database updated and local state applied');
+
+      // Log the action
+      get().addLogEntry('lay_down', `Laid down Phase ${phaseIndex + 1} (${allCards.length} cards)`, 'You');
+
       return true;
     } catch (err) {
       set({ error: (err as Error).message });
@@ -509,8 +767,19 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   hitOnGroup: async (targetPlayerId: string, groupIndex: number, card: Card) => {
-    const { game, currentPlayer, players } = get();
-    if (!game || !currentPlayer) return false;
+    const { game, currentPlayer, players, loading } = get();
+
+    console.log('[HIT] Starting hit on group:', { targetPlayerId, groupIndex, cardId: card.id });
+
+    if (loading) {
+      console.log('[HIT] Error: Action already in progress');
+      return false;
+    }
+
+    if (!game || !currentPlayer) {
+      console.log('[HIT] Error: No game or currentPlayer');
+      return false;
+    }
 
     // Validate turn
     const sortedPlayers = [...players].sort((a, b) => a.seat_index - b.seat_index);
@@ -559,17 +828,63 @@ export const useGameStore = create<GameStore>((set, get) => ({
       const newLaidDownCards = [...targetPlayer.laid_down_cards];
       newLaidDownCards[groupIndex] = [...targetGroup, card];
 
+      console.log('[HIT] Updating database...', {
+        newHandLength: newHand.length,
+        targetPlayerNewGroupSize: newLaidDownCards[groupIndex].length,
+      });
+
       // Update current player's hand
-      await supabase
+      const { error: handError } = await supabase
         .from('game_players')
         .update({ hand: newHand } as never)
         .eq('id', currentPlayer.id);
 
+      if (handError) {
+        console.log('[HIT] Error updating hand:', handError);
+        throw handError;
+      }
+
       // Update target player's laid down cards
-      await supabase
+      const { error: targetError } = await supabase
         .from('game_players')
         .update({ laid_down_cards: newLaidDownCards } as never)
         .eq('id', targetPlayer.id);
+
+      if (targetError) {
+        console.log('[HIT] Error updating target player:', targetError);
+        throw targetError;
+      }
+
+      // Immediately apply updates locally
+      const updatedCurrentPlayer: GamePlayer = {
+        ...currentPlayer,
+        hand: newHand,
+      };
+      const updatedTargetPlayerLocal: GamePlayer = {
+        ...targetPlayer,
+        laid_down_cards: newLaidDownCards,
+      };
+
+      const { players: currentPlayers } = get();
+      const updatedPlayers = currentPlayers.map(p => {
+        if (p.id === currentPlayer.id) return updatedCurrentPlayer;
+        if (p.id === targetPlayer.id) return updatedTargetPlayerLocal;
+        return p;
+      });
+
+      set({
+        players: updatedPlayers,
+        currentPlayer: updatedCurrentPlayer,
+      });
+
+      console.log('[HIT] Database updated and local state applied');
+
+      // Log the action
+      const cardName = getCardDisplayName(card);
+      get().addLogEntry('hit', `Hit ${cardName} on group ${groupIndex + 1}`, 'You');
+
+      // Clear selection after successful hit
+      get().clearSelection();
 
       return true;
     } catch (err) {
@@ -581,30 +896,48 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   discardCard: async (card: Card) => {
-    const { game, currentPlayer, players, phaseSet } = get();
-    if (!game || !currentPlayer) return false;
+    const { game, currentPlayer, players, phaseSet, loading } = get();
+
+    console.log('[DISCARD] Starting discard:', { cardId: card.id, isSkip: card.isSkip });
+
+    if (loading) {
+      console.log('[DISCARD] Error: Action already in progress');
+      return false;
+    }
+
+    if (!game || !currentPlayer) {
+      console.log('[DISCARD] Error: No game or currentPlayer');
+      return false;
+    }
 
     // Validate turn
     const sortedPlayers = [...players].sort((a, b) => a.seat_index - b.seat_index);
     const currentTurnPlayer = sortedPlayers[game.current_player_index];
+
     if (currentTurnPlayer?.user_id !== currentPlayer.user_id) {
+      console.log('[DISCARD] Error: Not your turn');
       set({ error: 'Not your turn' });
       return false;
     }
 
     if (game.turn_phase !== 'play') {
+      console.log('[DISCARD] Error: Must draw first');
       set({ error: 'Must draw first' });
       return false;
     }
 
-    set({ loading: true, error: null });
-    try {
-      // Remove card from hand
-      const [removedCard, newHand] = removeCardById(currentPlayer.hand, card.id);
-      if (!removedCard) {
-        throw new Error('Card not in hand');
-      }
+    // Remove card from hand
+    const [removedCard, newHand] = removeCardById(currentPlayer.hand, card.id);
+    if (!removedCard) {
+      console.log('[DISCARD] Error: Card not in hand');
+      set({ error: 'Card not in hand' });
+      return false;
+    }
 
+    // Set loading to disable UI
+    set({ loading: true, error: null, selectedCards: [] });
+
+    try {
       // Add to discard pile
       const newDiscardPile = [...game.discard_pile, removedCard];
 
@@ -620,12 +953,18 @@ export const useGameStore = create<GameStore>((set, get) => ({
         actualNextIndex = (nextPlayerIndex + 1) % sortedPlayers.length;
       }
 
+      console.log('[DISCARD] Updating database...', {
+        newHandLength: newHand.length,
+        actualNextIndex,
+        isRoundOver,
+      });
+
       if (isRoundOver) {
-        // Round is over - score and reset
+        console.log('[DISCARD] Round is over, calling handleRoundEnd');
         await handleRoundEnd(game, players, currentPlayer, phaseSet!, newDiscardPile);
       } else {
-        // Update game state
-        await supabase
+        // Update game state in database
+        const { error: gameError } = await supabase
           .from('games')
           .update({
             discard_pile: newDiscardPile,
@@ -635,16 +974,65 @@ export const useGameStore = create<GameStore>((set, get) => ({
           } as never)
           .eq('id', game.id);
 
-        // Update player hand
-        await supabase
+        if (gameError) {
+          console.log('[DISCARD] Error updating game:', gameError);
+          throw gameError;
+        }
+
+        // Immediately apply game update locally
+        const updatedGame: Game = {
+          ...game,
+          discard_pile: newDiscardPile,
+          current_player_index: actualNextIndex,
+          turn_phase: 'draw',
+          last_activity_at: new Date().toISOString(),
+        };
+        console.log('[DISCARD] Applying game update locally:', {
+          turnPhase: updatedGame.turn_phase,
+          currentPlayerIndex: updatedGame.current_player_index,
+        });
+        set({ game: updatedGame });
+
+        // Update player hand in database
+        const { error: playerError } = await supabase
           .from('game_players')
           .update({ hand: newHand } as never)
           .eq('id', currentPlayer.id);
+
+        if (playerError) {
+          console.log('[DISCARD] Error updating player:', playerError);
+          throw playerError;
+        }
+
+        // Immediately apply player update locally
+        const updatedCurrentPlayer: GamePlayer = {
+          ...currentPlayer,
+          hand: newHand,
+        };
+        const { players: currentPlayers } = get();
+        const updatedPlayers = currentPlayers.map(p =>
+          p.id === currentPlayer.id ? updatedCurrentPlayer : p
+        );
+        set({
+          players: updatedPlayers,
+          currentPlayer: updatedCurrentPlayer,
+        });
+        console.log('[DISCARD] Applied player update locally, hand length:', newHand.length);
       }
 
-      get().clearSelection();
+      console.log('[DISCARD] Database updated and local state applied');
+
+      // Log the action
+      const cardName = getCardDisplayName(card);
+      if (card.isSkip) {
+        get().addLogEntry('skip', `Discarded ${cardName} - next player skipped!`, 'You');
+      } else {
+        get().addLogEntry('discard', `Discarded ${cardName}`, 'You');
+      }
+
       return true;
     } catch (err) {
+      console.log('[DISCARD] Error:', err);
       set({ error: (err as Error).message });
       return false;
     } finally {
@@ -668,6 +1056,22 @@ export const useGameStore = create<GameStore>((set, get) => ({
     set({ selectedCards: [] });
   },
 
+  addLogEntry: (action, details, playerName) => {
+    const { currentPlayer, actionLog } = get();
+    const entry: ActionLogEntry = {
+      id: `${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+      timestamp: new Date(),
+      playerId: currentPlayer?.user_id || 'system',
+      playerName: playerName || 'System',
+      action,
+      details,
+    };
+    // Keep last 50 entries
+    const newLog = [...actionLog, entry].slice(-50);
+    set({ actionLog: newLog });
+    console.log(`[ACTION LOG] ${entry.playerName}: ${entry.details}`);
+  },
+
   setError: (error: string | null) => {
     set({ error });
   },
@@ -682,6 +1086,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       selectedCards: [],
       loading: false,
       error: null,
+      actionLog: [],
       channel: null,
     });
   },

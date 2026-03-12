@@ -11,6 +11,15 @@ interface HandProps {
 }
 
 export default function Hand({ cards, selectedCards, disabled, onCardPress }: HandProps) {
+  // Deduplicate cards by ID to prevent React key errors
+  const uniqueCards = cards.filter((card, index, self) =>
+    index === self.findIndex(c => c.id === card.id)
+  );
+
+  if (uniqueCards.length !== cards.length) {
+    console.warn('[HAND] Duplicate cards detected and filtered:', cards.length, '->', uniqueCards.length);
+  }
+
   // Calculate overlap based on number of cards
   const cardWidth = 60;
   const minOverlap = -35; // How much cards overlap (negative = more overlap)
@@ -18,9 +27,9 @@ export default function Hand({ cards, selectedCards, disabled, onCardPress }: Ha
 
   // Dynamic overlap based on card count
   const getOverlap = () => {
-    if (cards.length <= 5) return maxOverlap;
-    if (cards.length <= 8) return 0;
-    if (cards.length <= 10) return -15;
+    if (uniqueCards.length <= 5) return maxOverlap;
+    if (uniqueCards.length <= 8) return 0;
+    if (uniqueCards.length <= 10) return -15;
     return minOverlap;
   };
 
@@ -34,7 +43,7 @@ export default function Hand({ cards, selectedCards, disabled, onCardPress }: Ha
       style={styles.container}
     >
       <View style={styles.hand}>
-        {cards.map((card, index) => (
+        {uniqueCards.map((card, index) => (
           <View
             key={card.id}
             style={[

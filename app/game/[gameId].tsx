@@ -15,10 +15,10 @@ import { useColorScheme } from '@/components/useColorScheme';
 import { useGameStore } from '@/src/stores/gameStore';
 import { useAuthStore } from '@/src/stores/authStore';
 import { supabase } from '@/src/lib/supabase';
-import { Card as CardType, Profile, PhaseRequirement } from '@/src/types/database';
+import { Card as CardType, Profile, PhaseRequirement, Game, GamePlayer } from '@/src/types/database';
 import { validatePhase, getPhaseDescription } from '@/src/utils/phaseValidation';
 import { sortCards } from '@/src/utils/deck';
-import { Card, Hand, GamePiles, PhaseDisplay, PhaseTable } from '@/src/components';
+import { Card, Hand, GamePiles, PhaseDisplay, PhaseTable, GameLog } from '@/src/components';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 
 interface PlayerInfo {
@@ -46,6 +46,7 @@ export default function GameScreen() {
     selectedCards,
     loading,
     error,
+    actionLog,
     loadGame,
     drawCard,
     layDownPhase,
@@ -60,6 +61,7 @@ export default function GameScreen() {
   const [profiles, setProfiles] = useState<Record<string, Profile>>({});
   const [showLayDownModal, setShowLayDownModal] = useState(false);
   const [showHitModal, setShowHitModal] = useState(false);
+  const [logExpanded, setLogExpanded] = useState(false);
   const [hitTargetPlayer, setHitTargetPlayer] = useState<string | null>(null);
   const [hitTargetGroup, setHitTargetGroup] = useState<number | null>(null);
   const [showMenu, setShowMenu] = useState(false);
@@ -119,6 +121,60 @@ export default function GameScreen() {
   // Is it current user's turn?
   const isMyTurn = turnPlayer?.user_id === user?.id;
 
+  // Poll for game state when it's not your turn
+  // This is more reliable than depending on realtime for game state
+  useEffect(() => {
+    if (!game || !gameId || game.status !== 'playing') return;
+
+    // Only poll when it's NOT your turn
+    if (isMyTurn) return;
+
+    console.log('[POLLING] Starting poll - waiting for turn');
+    const pollInterval = setInterval(async () => {
+      const { data } = await supabase
+        .from('games')
+        .select('*')
+        .eq('id', gameId)
+        .single();
+
+      if (data) {
+        const newGame = data as Game;
+        // Check if anything changed
+        if (newGame.current_player_index !== game.current_player_index ||
+            newGame.turn_phase !== game.turn_phase ||
+            newGame.discard_pile?.length !== game.discard_pile?.length) {
+          console.log('[POLLING] Game state changed, updating:', {
+            currentPlayerIndex: newGame.current_player_index,
+            turnPhase: newGame.turn_phase,
+            discardPileLength: newGame.discard_pile?.length,
+          });
+          useGameStore.setState({ game: newGame });
+
+          // Also refetch players to get latest state
+          const { data: playersData } = await supabase
+            .from('game_players')
+            .select('*')
+            .eq('game_id', gameId)
+            .order('seat_index');
+
+          if (playersData) {
+            const updatedPlayers = playersData as GamePlayer[];
+            const updatedCurrentPlayer = updatedPlayers.find(p => p.user_id === user?.id);
+            useGameStore.setState({
+              players: updatedPlayers,
+              currentPlayer: updatedCurrentPlayer || null,
+            });
+          }
+        }
+      }
+    }, 2000); // Poll every 2 seconds
+
+    return () => {
+      console.log('[POLLING] Stopping poll');
+      clearInterval(pollInterval);
+    };
+  }, [game, gameId, isMyTurn, user?.id]);
+
   // Current phase requirements
   const currentPhaseRequirements = useMemo((): PhaseRequirement[] => {
     if (!currentPlayer || !phaseSet) return [];
@@ -130,25 +186,38 @@ export default function GameScreen() {
     return sortedPlayers.map((player) => ({
       id: player.id,
       username: profiles[player.user_id]?.username || 'Unknown',
-      phaseIndex: player.current_phase_index,
-      hasLaidDown: player.has_laid_down,
-      cardCount: player.hand.length,
-      score: player.score,
+      phaseIndex: player.current_phase_index ?? 0,
+      hasLaidDown: player.has_laid_down ?? false,
+      cardCount: player.hand?.length ?? 0,
+      score: player.score ?? 0,
       isCurrentTurn: turnPlayer?.id === player.id,
     }));
   }, [sortedPlayers, profiles, turnPlayer]);
 
   // Get cards from selected IDs
   const getSelectedCards = useCallback((): CardType[] => {
-    if (!currentPlayer) return [];
+    if (!currentPlayer?.hand) return [];
     return currentPlayer.hand.filter((card) => selectedCards.includes(card.id));
   }, [currentPlayer, selectedCards]);
 
   // Sorted hand for display
   const sortedHand = useMemo(() => {
-    if (!currentPlayer) return [];
+    if (!currentPlayer?.hand) return [];
     return sortCards(currentPlayer.hand);
   }, [currentPlayer]);
+
+  // Debug logging for game state changes
+  useEffect(() => {
+    if (game) {
+      console.log('[UI-STATE] Game state updated:', {
+        turnPhase: game.turn_phase,
+        currentPlayerIndex: game.current_player_index,
+        discardPileLength: game.discard_pile?.length,
+        topDiscard: game.discard_pile?.[game.discard_pile.length - 1],
+        drawPileLength: game.draw_pile?.length,
+      });
+    }
+  }, [game]);
 
   // Handle card selection
   const handleCardPress = (cardId: string) => {
@@ -180,9 +249,20 @@ export default function GameScreen() {
 
   // Handle draw from deck
   const handleDrawFromDeck = async () => {
-    if (!isMyTurn || game?.turn_phase !== 'draw') return;
+    console.log('[UI-DRAW] handleDrawFromDeck called:', {
+      isMyTurn,
+      turnPhase: game?.turn_phase,
+      loading,
+    });
+
+    if (!isMyTurn || game?.turn_phase !== 'draw') {
+      console.log('[UI-DRAW] Blocked: not my turn or wrong phase');
+      return;
+    }
 
     const success = await drawCard('draw');
+    console.log('[UI-DRAW] drawCard(draw) result:', { success, error });
+
     if (!success && error) {
       Alert.alert('Error', error);
     }
@@ -190,15 +270,28 @@ export default function GameScreen() {
 
   // Handle draw from discard
   const handleDrawFromDiscard = async () => {
-    if (!isMyTurn || game?.turn_phase !== 'draw') return;
+    console.log('[UI-DRAW] handleDrawFromDiscard called:', {
+      isMyTurn,
+      turnPhase: game?.turn_phase,
+      loading,
+    });
 
-    const topDiscard = game.discard_pile[game.discard_pile.length - 1];
+    if (!isMyTurn || game?.turn_phase !== 'draw') {
+      console.log('[UI-DRAW] Blocked: not my turn or wrong phase');
+      return;
+    }
+
+    const discardPile = game.discard_pile ?? [];
+    const topDiscard = discardPile[discardPile.length - 1];
     if (topDiscard?.isSkip) {
+      console.log('[UI-DRAW] Blocked: top discard is a Skip');
       Alert.alert('Error', 'Cannot draw a Skip card');
       return;
     }
 
     const success = await drawCard('discard');
+    console.log('[UI-DRAW] drawCard(discard) result:', { success, error });
+
     if (!success && error) {
       Alert.alert('Error', error);
     }
@@ -232,15 +325,41 @@ export default function GameScreen() {
 
   // Handle discard
   const handleDiscard = async () => {
-    if (!isMyTurn || game?.turn_phase !== 'play') return;
+    console.log('[UI-DISCARD] handleDiscard called:', {
+      isMyTurn,
+      turnPhase: game?.turn_phase,
+      selectedCardsCount: selectedCards.length,
+    });
+
+    if (!isMyTurn || game?.turn_phase !== 'play') {
+      console.log('[UI-DISCARD] Blocked: not my turn or wrong phase');
+      return;
+    }
 
     if (selectedCards.length !== 1) {
+      console.log('[UI-DISCARD] Blocked: wrong number of cards selected');
       Alert.alert('Error', 'Select exactly one card to discard');
       return;
     }
 
     const card = getSelectedCards()[0];
+    if (!card) {
+      console.log('[UI-DISCARD] Error: Selected card not found in hand');
+      Alert.alert('Error', 'Selected card not found. Please select a card from your hand.');
+      clearSelection();
+      return;
+    }
+    console.log('[UI-DISCARD] Discarding card:', {
+      cardId: card.id,
+      cardValue: card.value,
+      cardColor: card.color,
+      isSkip: card.isSkip,
+      isWild: card.isWild,
+    });
+
     const success = await discardCard(card);
+    console.log('[UI-DISCARD] discardCard result:', { success, error });
+
     if (!success && error) {
       Alert.alert('Error', error);
     }
@@ -371,12 +490,26 @@ export default function GameScreen() {
       </ScrollView>
 
       {/* Turn indicator */}
-      <View style={[styles.turnIndicator, isDark && styles.turnIndicatorDark]}>
-        <Text style={[styles.turnText, isDark && styles.textDark]}>
+      <View style={[
+        styles.turnIndicator,
+        isDark && styles.turnIndicatorDark,
+        isMyTurn && styles.turnIndicatorMyTurn,
+      ]}>
+        <Text style={[styles.turnText, isDark && styles.textDark, isMyTurn && styles.turnTextMyTurn]}>
           {isMyTurn ? "Your turn" : `${profiles[turnPlayer?.user_id || '']?.username || 'Unknown'}'s turn`}
         </Text>
-        <Text style={[styles.phaseText, isDark && styles.subtitleDark]}>
-          {game.turn_phase === 'draw' ? 'Draw a card' : 'Play or discard'}
+        <Text style={[
+          styles.phaseText,
+          isDark && styles.subtitleDark,
+          isMyTurn && styles.phaseTextMyTurn,
+        ]}>
+          {isMyTurn
+            ? game.turn_phase === 'draw'
+              ? '👆 Tap a pile to draw a card'
+              : '✋ Select cards, then lay down phase, hit, or discard'
+            : game.turn_phase === 'draw'
+              ? 'Waiting to draw...'
+              : 'Playing...'}
         </Text>
       </View>
 
@@ -394,9 +527,9 @@ export default function GameScreen() {
       {/* Game table - Piles and laid down phases */}
       <View style={styles.tableArea}>
         <GamePiles
-          drawPileCount={game.draw_pile.length}
-          discardPile={game.discard_pile}
-          isDrawPhase={isMyTurn && game.turn_phase === 'draw'}
+          drawPileCount={game.draw_pile?.length ?? 0}
+          discardPile={game.discard_pile ?? []}
+          isDrawPhase={isMyTurn && game.turn_phase === 'draw' && !loading}
           onDrawFromDeck={handleDrawFromDeck}
           onDrawFromDiscard={handleDrawFromDiscard}
         />
@@ -406,9 +539,9 @@ export default function GameScreen() {
           players={sortedPlayers.map((p) => ({
             id: p.id,
             username: profiles[p.user_id]?.username || 'Unknown',
-            groups: (p.laid_down_cards || []).map((cards, idx) => ({
-              cards: cards as CardType[],
-              requirement: phaseSet?.phases[p.current_phase_index]?.[idx] || { type: 'set', size: 3, quantity: 1 },
+            groups: (p.laid_down_cards ?? []).map((cards, idx) => ({
+              cards: (cards ?? []) as CardType[],
+              requirement: phaseSet?.phases[p.current_phase_index ?? 0]?.[idx] || { type: 'set', size: 3, quantity: 1 },
             })),
             isCurrentPlayer: p.user_id === user?.id,
           }))}
@@ -420,6 +553,16 @@ export default function GameScreen() {
           }}
           isDark={isDark}
         />
+
+        {/* Game action log */}
+        <View style={styles.logSection}>
+          <GameLog
+            entries={actionLog}
+            isDark={isDark}
+            expanded={logExpanded}
+            onToggle={() => setLogExpanded(!logExpanded)}
+          />
+        </View>
       </View>
 
       {/* Player's hand */}
@@ -437,12 +580,14 @@ export default function GameScreen() {
         <View style={styles.actionBar}>
           {!currentPlayer.has_laid_down && (
             <Pressable
-              style={[styles.actionButton, styles.layDownButton]}
+              style={[styles.actionButton, styles.layDownButton, selectedCards.length === 0 && styles.actionButtonDisabled]}
               onPress={() => setShowLayDownModal(true)}
               disabled={selectedCards.length === 0}
             >
               <FontAwesome name="th-large" size={18} color="#fff" />
-              <Text style={styles.actionButtonText}>Lay Down</Text>
+              <Text style={styles.actionButtonText}>
+                Lay Down ({selectedCards.length}/{currentPhaseRequirements.reduce((sum, r) => sum + r.size * r.quantity, 0)})
+              </Text>
             </Pressable>
           )}
 
@@ -677,21 +822,36 @@ const styles = StyleSheet.create({
   // Turn indicator
   turnIndicator: {
     backgroundColor: '#fff',
-    paddingVertical: 8,
+    paddingVertical: 10,
     paddingHorizontal: 16,
     alignItems: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
   },
   turnIndicatorDark: {
     backgroundColor: '#1a1a1a',
+    borderBottomColor: '#333',
+  },
+  turnIndicatorMyTurn: {
+    backgroundColor: '#007AFF15',
+    borderBottomColor: '#007AFF40',
   },
   turnText: {
     fontSize: 16,
     fontWeight: '600',
     color: '#1a1a1a',
   },
+  turnTextMyTurn: {
+    color: '#007AFF',
+  },
   phaseText: {
-    fontSize: 12,
+    fontSize: 13,
     color: '#666',
+    marginTop: 2,
+  },
+  phaseTextMyTurn: {
+    color: '#007AFF',
+    fontWeight: '500',
   },
   // Phase section
   phaseSection: {
@@ -702,6 +862,10 @@ const styles = StyleSheet.create({
   tableArea: {
     flex: 1,
     paddingHorizontal: 16,
+  },
+  // Log section
+  logSection: {
+    marginTop: 8,
   },
   // Hand area
   handArea: {
@@ -737,6 +901,9 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 14,
     fontWeight: '600',
+  },
+  actionButtonDisabled: {
+    opacity: 0.5,
   },
   layDownButton: {
     backgroundColor: '#34C759',

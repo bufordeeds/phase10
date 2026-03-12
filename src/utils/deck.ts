@@ -6,10 +6,12 @@ const WILD_COUNT = 8;
 const SKIP_COUNT = 4;
 
 /**
- * Generate a unique card ID
+ * Generate a unique card ID using counter + random for guaranteed uniqueness
  */
+let cardIdCounter = 0;
 function generateCardId(): string {
-  return Math.random().toString(36).substring(2, 9);
+  cardIdCounter++;
+  return `${cardIdCounter}_${Math.random().toString(36).substring(2, 7)}`;
 }
 
 /**

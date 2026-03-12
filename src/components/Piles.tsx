@@ -108,6 +108,14 @@ export function GamePiles({
   const topDiscard = discardPile.length > 0 ? discardPile[discardPile.length - 1] : null;
   const canDrawFromDiscard = isDrawPhase && topDiscard && !topDiscard.isSkip;
 
+  console.log('[PILES] Rendering:', {
+    drawPileCount,
+    discardPileLength: discardPile.length,
+    topDiscard: topDiscard ? { id: topDiscard.id, value: topDiscard.value, isSkip: topDiscard.isSkip } : null,
+    isDrawPhase,
+    canDrawFromDiscard,
+  });
+
   return (
     <View style={styles.gamePiles}>
       <DrawPile
